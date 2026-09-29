@@ -1,0 +1,258 @@
+// Clientdesk data model.
+// Money is always stored as integer minor units (cents / paise).
+// SQLite has no enums, so status fields are strings validated in src/lib/constants.ts.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String       @id @default(cuid())
+  email        String       @unique
+  name         String
+  passwordHash String
+  createdAt    DateTime     @default(now())
+  memberships  Membership[]
+  sessions     Session[]
+  timeEntries  TimeEntry[]
+}
+
+model Session {
+  id        String   @id // sha256 of the cookie token
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+model Workspace {
+  id                String   @id @default(cuid())
+  name              String
+  businessEmail     String?
+  address           String?
+  taxId             String?
+  currency          String   @default("USD")
+  invoicePrefix     String   @default("INV-")
+  nextInvoiceNumber Int      @default(1)
+  defaultTaxBps     Int      @default(0) // 1800 = 18.00%
+  paymentTerms      Int      @default(14) // days
+  invoiceFooter     String?
+  plan              String   @default("free")
+
+  // Payment provider config. Secrets are AES-GCM encrypted with APP_SECRET.
+  paymentProvider          String  @default("none") // none | stripe | razorpay
+  stripeSecretKeyEnc       String?
+  stripeWebhookSecretEnc   String?
+  razorpayKeyId            String?
+  razorpayKeySecretEnc     String?
+  razorpayWebhookSecretEnc String?
+
+  createdAt  DateTime     @default(now())
+  members    Membership[]
+  clients    Client[]
+  projects   Project[]
+  proposals  Proposal[]
+  invoices   Invoice[]
+  activities Activity[]
+}
+
+model Membership {
+  id          String    @id @default(cuid())
+  userId      String
+  workspaceId String
+  role        String    @default("owner")
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, workspaceId])
+}
+
+model Client {
+  id            String    @id @default(cuid())
+  workspaceId   String
+  workspace     Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  name          String
+  company       String?
+  email         String?
+  phone         String?
+  address       String?
+  notes         String?
+  portalToken   String    @unique
+  portalEnabled Boolean   @default(true)
+  createdAt     DateTime  @default(now())
+  projects      Project[]
+  proposals     Proposal[]
+  invoices      Invoice[]
+
+  @@index([workspaceId])
+}
+
+model Project {
+  id          String    @id @default(cuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  clientId    String
+  client      Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  name        String
+  description String?
+  status      String    @default("active") // active | on_hold | completed | archived
+  billingType String    @default("fixed") // fixed | hourly
+  hourlyRate  Int       @default(0)
+  currency    String    @default("USD")
+  budget      Int?
+  startDate   DateTime?
+  dueDate     DateTime?
+  createdAt   DateTime  @default(now())
+  milestones  Milestone[]
+  timeEntries TimeEntry[]
+  proposals   Proposal[]
+  invoices    Invoice[]
+  activities  Activity[]
+
+  @@index([workspaceId])
+  @@index([clientId])
+}
+
+model Proposal {
+  id              String         @id @default(cuid())
+  workspaceId     String
+  workspace       Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  clientId        String
+  client          Client         @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  projectId       String
+  project         Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  title           String
+  summary         String?
+  terms           String?
+  status          String         @default("draft") // draft | sent | accepted | declined
+  currency        String
+  validUntil      DateTime?
+  sentAt          DateTime?
+  respondedAt     DateTime?
+  respondedByName String?
+  responseNote    String?
+  createdAt       DateTime       @default(now())
+  items           ProposalItem[]
+
+  @@index([projectId])
+}
+
+model ProposalItem {
+  id          String   @id @default(cuid())
+  proposalId  String
+  proposal    Proposal @relation(fields: [proposalId], references: [id], onDelete: Cascade)
+  title       String
+  description String?
+  amount      Int
+  dueInDays   Int?
+  position    Int      @default(0)
+}
+
+model Milestone {
+  id          String      @id @default(cuid())
+  projectId   String
+  project     Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  title       String
+  description String?
+  amount      Int         @default(0)
+  dueDate     DateTime?
+  status      String      @default("pending") // pending | in_progress | submitted | changes_requested | approved
+  position    Int         @default(0)
+  deliverable String?     // link / notes shown to the client on submit
+  submittedAt DateTime?
+  approvedAt  DateTime?
+  approvedBy  String?
+  clientNote  String?
+  createdAt   DateTime    @default(now())
+  timeEntries TimeEntry[]
+  invoiceItem InvoiceItem?
+
+  @@index([projectId])
+}
+
+model TimeEntry {
+  id          String     @id @default(cuid())
+  projectId   String
+  project     Project    @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  milestoneId String?
+  milestone   Milestone? @relation(fields: [milestoneId], references: [id], onDelete: SetNull)
+  userId      String
+  user        User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  description String?
+  startedAt   DateTime
+  endedAt     DateTime?  // null = timer running
+  minutes     Int        @default(0)
+  billable    Boolean    @default(true)
+  invoiceId   String?
+  invoice     Invoice?   @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
+  createdAt   DateTime   @default(now())
+
+  @@index([projectId])
+  @@index([userId, endedAt])
+}
+
+model Invoice {
+  id              String        @id @default(cuid())
+  workspaceId     String
+  workspace       Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  clientId        String
+  client          Client        @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  projectId       String?
+  project         Project?      @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  number          String
+  status          String        @default("draft") // draft | sent | paid | void
+  currency        String
+  issueDate       DateTime      @default(now())
+  dueDate         DateTime?
+  notes           String?
+  taxBps          Int           @default(0)
+  subtotal        Int           @default(0)
+  tax             Int           @default(0)
+  total           Int           @default(0)
+  sentAt          DateTime?
+  paidAt          DateTime?
+  paymentProvider String?       // stripe | razorpay | manual
+  paymentRef      String?
+  stripeSessionId String?
+  razorpayOrderId String?
+  createdAt       DateTime      @default(now())
+  items           InvoiceItem[]
+  timeEntries     TimeEntry[]
+
+  @@unique([workspaceId, number])
+  @@index([clientId])
+}
+
+model InvoiceItem {
+  id          String     @id @default(cuid())
+  invoiceId   String
+  invoice     Invoice    @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  description String
+  quantity    Float      @default(1)
+  unitAmount  Int
+  amount      Int
+  milestoneId String?    @unique
+  milestone   Milestone? @relation(fields: [milestoneId], references: [id], onDelete: SetNull)
+  position    Int        @default(0)
+}
+
+model Activity {
+  id          String    @id @default(cuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  projectId   String?
+  project     Project?  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  actor       String    // freelancer | client | system
+  actorName   String?
+  message     String
+  createdAt   DateTime  @default(now())
+
+  @@index([workspaceId, createdAt])
+}
